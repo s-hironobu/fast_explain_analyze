@@ -3,7 +3,7 @@
 
  Usage: python analyze.py [file|dir]
 
- Copyright (c) 2025, Hironobu Suzuki @ interdb.jp
+ Copyright (c) 202-20265, Hironobu Suzuki @ interdb.jp
 """
 
 import sys
@@ -149,10 +149,9 @@ if __name__ == "__main__":
 
     files = [
         # [title, file]
-        ["Original", BASE_DIR + "/phase0.log"],
-        ["Phase 1", BASE_DIR + "/phase1.log"],
-        ["Phase 2", BASE_DIR + "/phase2.log"],
-        ["Phase 3", BASE_DIR + "/phase3.log"],
+        ["original", BASE_DIR + "/original.log"],
+        ["alt-wrapper", BASE_DIR + "/alt-wrapper.log"],
+        ["only-in-node", BASE_DIR + "/only-in-node.log"],
     ]
 
     displayHeader()

@@ -1,9 +1,9 @@
 #!/bin/bash
 #
 #
-#    Usage: $0 {setup|benchmark}
+#    Usage: $0 {setup|benchmark} [original|alt-wrapper|only-in-node]
 #
-# Copyright (c) 2025, Hironobu Suzuki @ interdb.jp
+# Copyright (c) 2025-2026, Hironobu Suzuki @ interdb.jp
 
 set -eu -o pipefail
 
@@ -15,8 +15,18 @@ SOURCE_DIR=${BASE}/postgres
 PGSQL_DIR=${BASE}/pgsql
 DB_NAME="testdb"
 
-#COMMIT="b4cbc106a6ced69a0a13a980e1b4b212bb127458"
-COMMIT="47a9f61fcafcf26bd3d68740ca05ba69ac729d93"
+# Base branch: PostgreSQL master (development branch).
+BRANCH="master"
+
+# If you want to pin the base to a specific commit on master,
+# set COMMIT to its hash.  If empty, the tip of origin/master
+# fetched by 'setup' is used.  ('benchmark' does not fetch, so all
+# phases are built on the same base.)
+COMMIT=""
+
+# Patches
+PATCH_ALT_WRAPPER="v1-0001-alt-rowcount-only-instr-wrapper.patch"
+PATCH_ONLY_IN_NODE="v1-0001-rowcount-only-instr-in-ExecProcNode.patch"
 
 #--------------------
 # Common
@@ -28,9 +38,26 @@ git_reset() {
 	echo "Error: Failed to execute 'git reset --hard HEAD'."
 	exit 1
     fi
-    git reset --hard $COMMIT
+    local target=${COMMIT:-origin/$BRANCH}
+    git checkout -B $BRANCH $target
     if [ $? -ne 0 ]; then
-	echo "Error: Failed to execute 'git reset --hard $COMMIT'."
+	echo "Error: Failed to execute 'git checkout -B $BRANCH $target'."
+	exit 1
+    fi
+    git reset --hard $target
+    if [ $? -ne 0 ]; then
+	echo "Error: Failed to execute 'git reset --hard $target'."
+	exit 1
+    fi
+    echo "Base: $BRANCH `git rev-parse HEAD`"
+    cd $BASE
+}
+
+git_fetch() {
+    cd $SOURCE_DIR
+    git fetch origin $BRANCH:refs/remotes/origin/$BRANCH
+    if [ $? -ne 0 ]; then
+	echo "Error: Failed to fetch '$BRANCH'."
 	exit 1
     fi
     cd $BASE
@@ -58,14 +85,15 @@ setup() {
     fi
 
     if [ ! -d $SOURCE_DIR ]; then
-	git clone https://github.com/postgres/postgres.git
+	git clone -b $BRANCH https://github.com/postgres/postgres.git
 	if [ $? -ne 0 ]; then
 	    echo "Error: Failed to clone PostgreSQL repository."
 	    exit 1
 	fi
     fi
 
-    # 2. git reset
+    # 2. git fetch master && git reset
+    git_fetch
     git_reset
 
     # 3. configure && make && make install
@@ -137,7 +165,7 @@ setup() {
     	INSERT INTO test2 (id, data) SELECT i, floor(random() * 50 + 1)::int FROM generate_series(1, 50000) AS i;
     	INSERT INTO test3 (id, data) SELECT i, i FROM generate_series(1, 100000) AS i;
     	ANALYZE;"
-    if [ $? -nq 0 ]; then
+    if [ $? -ne 0 ]; then
         echo "Error: Failed to create tables in '$DB_NAME'."
         exit 1
     fi
@@ -176,6 +204,10 @@ run_benchmark_phase() {
 
     if [ -n "$patch_file" ]; then
         patch -p1 < "../patches/$patch_file"
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to apply '$patch_file'."
+            exit 1
+        fi
     fi
 
     ./configure --prefix=$PGSQL_DIR --without-icu CFLAGS="-O3 -g"
@@ -185,20 +217,16 @@ run_benchmark_phase() {
 }
 
 
-phase0_bench() {
-    run_benchmark_phase "PHASE0" "" "batch.sql"
+original_bench() {
+    run_benchmark_phase "original" "" "batch.sql"
 }
 
-phase1_bench() {
-    run_benchmark_phase "PHASE1" "phase-1.patch" "batch.sql"
+alt_wrapper_bench() {
+    run_benchmark_phase "alt-wrapper" "$PATCH_ALT_WRAPPER" "batch.sql"
 }
 
-phase2_bench() {
-    run_benchmark_phase "PHASE2" "phase-2.patch" "batch.sql"
-}
-
-phase3_bench() {
-    run_benchmark_phase "PHASE3" "phase-3.patch" "batch.sql"
+only_in_node_bench() {
+    run_benchmark_phase "only-in-node" "$PATCH_ONLY_IN_NODE" "batch.sql"
 }
 
 
@@ -223,32 +251,26 @@ benchmark() {
     # 3.  do benchmark
     #
     case "$1" in
-	phase0)
-	    echo "PHASE0"
-	    phase0_bench
+	original)
+	    echo "ORIGINAL"
+	    original_bench
             ;;
-	phase1)
-	    echo "PHASE1"
-	    phase1_bench
+	alt-wrapper)
+	    echo "ALT-WRAPPER"
+	    alt_wrapper_bench
             ;;
-	phase2)
-	    echo "PHASE2"
-	    phase2_bench
-            ;;
-	phase3)
-	    echo "PHASE3"
-	    phase3_bench
+	only-in-node)
+	    echo "ONLY-IN-NODE"
+	    only_in_node_bench
             ;;
 	ALL)
 	    echo "ALL"
-	    echo "PHASE0"
-	    phase0_bench
-	    echo "PHASE1"
-	    phase1_bench
-	    echo "PHASE2"
-	    phase2_bench
-	    echo "PHASE3"
-	    phase3_bench
+	    echo "ORIGINAL"
+	    original_bench
+	    echo "ALT-WRAPPER"
+	    alt_wrapper_bench
+	    echo "ONLY-IN-NODE"
+	    only_in_node_bench
 	    ;;
 	*)
 	    echo "Error: '$1' is not a valid argument."
@@ -265,18 +287,18 @@ benchmark() {
 #--------------------
 
 if [ $# -ne 1 ] && [ $# -ne 2 ]; then
-    echo "Usage: $0 {setup|benchmark} [phase0|phase1|phase2|phase3]"
+    echo "Usage: $0 {setup|benchmark} [original|alt-wrapper|only-in-node]"
     exit 1
 fi
 
 PARAM="ALL"
 if [ $# -eq 2 ]; then
     case "$2" in
-	"phase0" | "phase1" | "phase2" | "phase3" )
+	"original" | "alt-wrapper" | "only-in-node" )
 	    PARAM=$2
 	    ;;
 	*)
-	    echo "Usage: $0 {setup|benchmark} [phase0|phase1|phase2|phase3]"
+	    echo "Usage: $0 {setup|benchmark} [original|alt-wrapper|only-in-node]"
 	    exit 1
 	    ;;
     esac
@@ -322,7 +344,7 @@ case "$1" in
 	esac
         ;;
     help)
-	echo "Usage: $0 {setup|benchmark}"
+	echo "Usage: $0 {setup|benchmark} [original|alt-wrapper|only-in-node]"
 	;;
     *)
         echo "Error: Invalid argument. Use 'setup' or 'benchmark'."

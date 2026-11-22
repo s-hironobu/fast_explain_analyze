@@ -1,7 +1,19 @@
-# Benchmark for fast EXPLAIN ANALYZE
+# Benchmark for fast EXPLAIN ANALYZE 2
 
 This repository stores the tools and results for benchmarking Fast EXPLAIN ANALYZE, as described in my blog post:
-+ [Fast EXPLAIN ANALYZE](http://www.interdb.jp/blog/pgsql/fast_explain_analyze/)
++ [Fast EXPLAIN ANALYZE 2](http://www.interdb.jp/blog/pgsql/fast_explain_analyze2/)
+
+This version benchmarks two row-count-only instrumentation patches against PostgreSQL 20 (`master`):
+
+| Option         | Patch                                                        | Description |
+|----------------|--------------------------------------------------------------|-------------|
+| `original`     | (none)                                                       | Unpatched `master`: 9b5d4e3 |
+| `alt-wrapper`  | `patches/v1-0001-alt-rowcount-only-instr-wrapper.patch`       | Row counting in a lightweight `ExecProcNodeInstrRows()` wrapper |
+| `only-in-node` | `patches/v1-0001-rowcount-only-instr-in-ExecProcNode.patch`   | Row counting inlined in `ExecProcNode()` (no wrapper call) |
+
+Both patches use the lightweight path only when timing, buffer and WAL usage are all off, e.g. `EXPLAIN (ANALYZE TRUE, TIMING FALSE, BUFFERS FALSE)`, which is what `batches/batch.sql` runs.
+
+The base is the tip of `origin/REL_19_STABLE` at the time `setup` is run. To pin a specific commit, set `COMMIT` in `bench.sh`.
 
 ## Requirements
 
@@ -32,33 +44,35 @@ $ bash ./bench.sh benchmark
 If you want to run them step-by-step, specify the option:
 
 ```
-$ bash ./bench.sh benchmark [phase0|phase1|phase2|phase3]
+$ bash ./bench.sh benchmark [original|alt-wrapper|only-in-node]
 ```
+
+The results are written to `pgsql/original.log`, `pgsql/alt-wrapper.log` and `pgsql/only-in-node.log`.
 
 After the benchmark is complete, you can use analyze.py to aggregate and display the results:
 
 ```
-$ python ./analyze.py 
+$ python ./analyze.py
+$ python analyze.py
 	Duration[s] (var. [s^2]) 	Overhead[%]
 -----------------------------------------------------
-**** Original:
-Query1	120.7846 	(0.1260)	N/A
-Query2	152.9188 	(0.3539)	26.60
-**** Phase 1:
-Query1	120.7209 	(0.0822)	N/A
-Query2	130.6013 	(0.0257)	8.18
-**** Phase 2:
-Query1	121.3559 	(0.0007)	N/A
-Query2	125.5515 	(0.0039)	3.46
-**** Phase 3:
-Query1	122.1207 	(0.1115)	N/A
-Query2	122.7696 	(0.1403)	0.53
+**** original:
+Query1	120.1261 	(0.0219)	N/A
+Query2	149.8707 	(0.1024)	24.76
+**** alt-wrapper:
+Query1	120.0420 	(0.0459)	N/A
+Query2	127.5671 	(0.0612)	6.27
+**** only-in-node:
+Query1	121.8334 	(0.0332)	N/A
+Query2	124.1280 	(0.0428)	1.88
 ```
+
+Query1 is the plain `SELECT`; Query2 is `EXPLAIN (ANALYZE TRUE, TIMING FALSE, BUFFERS FALSE)` of the same query. Overhead is Query2 relative to Query1.
 
 If you want to analyze only specific results, specify the data file:
 
 ```
-$ python3 ./analyze.py ./pgsql/phase1.log
+$ python3 ./analyze.py ./pgsql/alt-wrapper.log
 ```
 
 ## Others
@@ -81,4 +95,5 @@ $ python3 create_batches.py
 ```
 
 ## Change Log
+- 22 Nov 2026: Version 2.0 released. Rebased on PostgreSQL 20 (`master`); benchmarks the `alt-wrapper` and `only-in-node` patches.
 - 10 Dec 2025: Version 1.0 released.
