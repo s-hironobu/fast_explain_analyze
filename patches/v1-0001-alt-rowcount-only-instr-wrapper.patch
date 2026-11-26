@@ -138,7 +138,7 @@ index 7c4c66e..65a235f 100644
 + *
 + * Finish a run cycle of a plan node's instrumentation.  This is
 + * InstrEndLoop() plus folding the row-count-only counter kept in the
-+ * PlanState (see ExecProcNode()) into the node's NodeInstrumentation.
++ * PlanState (see ExecProcNodeInstrRows()) into the node's NodeInstrumentation.
 + */
 +void
 +ExecInstrEndLoop(PlanState *node)
@@ -185,7 +185,7 @@ index e4fd53c..3d165eb 100644
 +	/*
 +	 * Compact per-cycle row counter, used instead of ExecProcNodeInstr when
 +	 * the row count is the only instrumentation needed for this node.  It is
-+	 * maintained by ExecProcNode() and folded into *instrument by
++	 * maintained by ExecProcNodeInstrRows() and folded into *instrument by
 +	 * ExecInstrEndLoop().  Zero when not in use.  See INSTR_ROWS_* below.
 +	 */
 +	uint64		instr_rows;
@@ -199,7 +199,7 @@ index e4fd53c..3d165eb 100644
  
 +/*
 + * Bit layout of PlanState->instr_rows.  Packing the flag, the "running" state
-+ * and the counter into one word lets ExecProcNode() update all of them with a
++ * and the counter into one word lets the wrapper update all of them with a
 + * single load and a single store.  62 bits are far more than a double's 53-bit
 + * mantissa can represent exactly anyway.
 + */
