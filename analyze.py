@@ -3,11 +3,17 @@
 
  Usage: python analyze.py [file|dir]
 
- Copyright (c) 202-20265, Hironobu Suzuki @ interdb.jp
+   No argument: aggregate ./pgsql-pg20 (and ./pgsql, ./pgsql-pg19 of the
+                older bases), whichever have logs.
+   dir:         aggregate the logs in that directory.
+   file:        aggregate a single log file.
+
+ Copyright (c) 2025-2026, Hironobu Suzuki @ interdb.jp
 """
 
 import sys
 import os
+import re
 
 
 # Calculate avg and unbiased variance.
@@ -84,32 +90,123 @@ def preprocess(datalist):
     return [data1, data2, data3]
 
 
-def displayHeader():
-    print("\tDuration[s] (var. [s^2]) \tOverhead[%]")
-    print("-----------------------------------------------------")
+def displayHeader(with_vs_original=False):
+    if with_vs_original:
+        print("\tDuration[s] (var. [s^2]) \tOverhead[%]\tvs. original Query1[%]")
+        print("---------------------------------------------------------------------")
+    else:
+        print("\tDuration[s] (var. [s^2]) \tOverhead[%]")
+        print("-----------------------------------------------------")
 
 
-def displaySingleBench(query1, query2, query3=None):
+def displaySingleBench(query1, query2, query3=None, orig_avg1=None):
     [avg1, var1] = query1
     [avg2, var2] = query2
-    print("Query1\t{:.4f} \t({:.4f})\tN/A".format(avg1, var1))
+
+    def vs(avg):
+        if orig_avg1 is None:
+            return ""
+        return "\t{:.2f}".format(100 * (avg - orig_avg1) / orig_avg1)
+
+    print("Query1\t{:.4f} \t({:.4f})\tN/A{}".format(avg1, var1, vs(avg1)))
     print(
-        "Query2\t{:.4f} \t({:.4f})\t{:.2f}".format(
-            avg2, var2, 100 * (avg2 - avg1) / avg1
+        "Query2\t{:.4f} \t({:.4f})\t{:.2f}{}".format(
+            avg2, var2, 100 * (avg2 - avg1) / avg1, vs(avg2)
         )
     )
     if query3:
         [avg3, var3] = query3
         print(
-            "Query3\t{:.4f} \t({:.4f})\t{:.2f}".format(
-                avg3, var3, 100 * (avg3 - avg1) / avg1
+            "Query3\t{:.4f} \t({:.4f})\t{:.2f}{}".format(
+                avg3, var3, 100 * (avg3 - avg1) / avg1, vs(avg3)
             )
         )
 
 
+# Variants in the order they are displayed.  Variants without logs are
+# skipped, so original + alt-wrapper alone work.
+VARIANTS = ["original", "alt-wrapper", "only-in-node", "phase-2", "phase-3"]
+EXPERIMENTAL = ["only-in-node"]
+
+
+def label(v):
+    return v + (" (experimental)" if v in EXPERIMENTAL else "")
+
+
+def variantFiles(base_dir, v):
+    """Round logs <v>.r1.log, <v>.r2.log ... in rounds/, else the legacy <v>.log."""
+    rd = os.path.join(base_dir, "rounds")
+    files = []
+    if os.path.isdir(rd):
+        pat = re.compile(r"^" + re.escape(v) + r"\.r(\d+)\.log$")
+        found = []
+        for f in os.listdir(rd):
+            m = pat.match(f)
+            if m:
+                found.append((int(m.group(1)), os.path.join(rd, f)))
+        files = [f for _, f in sorted(found)]
+    if not files:
+        legacy = os.path.join(base_dir, v + ".log")
+        if os.path.isfile(legacy):
+            files = [legacy]
+    return files
+
+
+def analyzeDir(base_dir, quiet=False):
+    names = [v for v in VARIANTS if variantFiles(base_dir, v)]
+    if not names:
+        if not quiet:
+            print("Error: no log files found in {}".format(base_dir))
+        return False
+
+    commit = ""
+    try:
+        with open(os.path.join(base_dir, "BASE_COMMIT")) as fd:
+            commit = fd.read().strip()[:10]
+    except Exception:
+        pass
+
+    results = {}
+    rounds = {}
+    for v in names:
+        all1, all2, all3 = [], [], []
+        rounds[v] = []
+        for f in variantFiles(base_dir, v):
+            with open(f, "r") as fd:
+                datalist = fd.readlines()
+            [d1, d2, d3] = preprocess(datalist)
+            all1 += d1
+            all2 += d2
+            all3 += d3
+            rounds[v].append([calc(d1)[0], calc(d2)[0]])
+        results[v] = [calc(all1), calc(all2), calc(all3) if all3 != [] else None]
+
+    orig_avg1 = results["original"][0][0] if "original" in results else None
+
+    print("==== {}{} ====".format(base_dir, " (base: " + commit + ")" if commit else ""))
+    displayHeader(orig_avg1 is not None)
+    for v in names:
+        q1, q2, q3 = results[v]
+        print("**** {}:".format(label(v)))
+        displaySingleBench(q1, q2, q3, orig_avg1)
+
+    # Mean of each round.  If the rounds of one variant differ more than the
+    # variants differ from each other, the machine drifted: do not trust it.
+    if any(len(r) > 1 for r in rounds.values()):
+        print()
+        print("Per round (Query1 / Query2 [s], Overhead[%]):")
+        for v in names:
+            cells = []
+            for q1, q2 in rounds[v]:
+                cells.append("{:.2f}/{:.2f} ({:.2f})".format(q1, q2, 100 * (q2 - q1) / q1))
+            print("  {:24s} {}".format(label(v), "  ".join(cells)))
+    print()
+    return True
+
+
 if __name__ == "__main__":
 
-    BASE_DIR = "pgsql"
+    BASE_DIR = None
 
     if len(sys.argv) != 1 and len(sys.argv) != 2:
         print("Usage: python analyze.py [file|dir]")
@@ -147,30 +244,18 @@ if __name__ == "__main__":
             print("Error: {} not found.".format(sys.argv[1]))
             sys.exit(1)
 
-    files = [
-        # [title, file]
-        ["original", BASE_DIR + "/original.log"],
-        ["alt-wrapper", BASE_DIR + "/alt-wrapper.log"],
-        ["only-in-node", BASE_DIR + "/only-in-node.log"],
-    ]
-
-    displayHeader()
-
-    for title, filename in files:
-        try:
-            fd = open(filename, "r")
-            datalist = fd.readlines()
-            fd.close()
-        except Exception as e:
-            print("Error: {}".format(e))
+    if BASE_DIR is None:
+        dirs = [d for d in ["pgsql-pg20", "pgsql", "pgsql-pg19"] if os.path.isdir(d)]
+        if not dirs:
+            print("Error: pgsql-pg20 not found.  Run: bash ./bench.sh benchmark")
             sys.exit(1)
+    else:
+        dirs = [BASE_DIR]
 
-        [data1, data2, data3] = preprocess(datalist)
-        print("**** {}:".format(title))
-        [avg1, var1] = calc(data1)
-        [avg2, var2] = calc(data2)
-        if data3 != []:
-            [avg3, var3] = calc(data3)
-            displaySingleBench([avg1, var1], [avg2, var2], [avg3, var3])
-        else:
-            displaySingleBench([avg1, var1], [avg2, var2], None)
+    ok = False
+    for d in dirs:
+        # directories without logs are skipped silently, unless asked for
+        ok = analyzeDir(d, quiet=(BASE_DIR is None)) or ok
+    if not ok and BASE_DIR is None:
+        print("Error: no log files found.  Run: bash ./bench.sh benchmark")
+    sys.exit(0 if ok else 1)

@@ -3,17 +3,22 @@
 This repository stores the tools and results for benchmarking Fast EXPLAIN ANALYZE, as described in my blog post:
 + [Fast EXPLAIN ANALYZE 2](http://www.interdb.jp/blog/pgsql/fast_explain_analyze2/)
 
-This version benchmarks two row-count-only instrumentation patches against PostgreSQL 20 (`master`):
+This version benchmarks the `alt-wrapper` patch against unpatched PostgreSQL 20devel (`9ebc9a458c3`).
 
-| Option         | Patch                                                        | Description |
-|----------------|--------------------------------------------------------------|-------------|
-| `original`     | (none)                                                       | Unpatched `master`: 9b5d4e3 |
-| `alt-wrapper`  | `patches/v1-0001-alt-rowcount-only-instr-wrapper.patch`       | Row counting in a lightweight `ExecProcNodeInstrRows()` wrapper |
-| `only-in-node` | `patches/v1-0001-rowcount-only-instr-in-ExecProcNode.patch`   | Row counting inlined in `ExecProcNode()` (no wrapper call) |
+| Option         | Patch                                | Description |
+|----------------|--------------------------------------|-------------|
+| `original`     | (none)                               | Unpatched PostgreSQL 20devel |
+| `alt-wrapper`  | `patches/pg20-alt-wrapper.patch`      | Row counting in a lightweight `ExecProcNodeInstrRows()` wrapper |
 
-Both patches use the lightweight path only when timing, buffer and WAL usage are all off, e.g. `EXPLAIN (ANALYZE TRUE, TIMING FALSE, BUFFERS FALSE)`, which is what `batches/batch.sql` runs.
+Experimental variant (run with `benchmark all` or by name):
 
-The base is the tip of `origin/REL_19_STABLE` at the time `setup` is run. To pin a specific commit, set `COMMIT` in `bench.sh`.
+| Option         | Patch                                | Description |
+|----------------|--------------------------------------|-------------|
+| `only-in-node` | `patches/pg20-only-in-node.patch`     | Row counting inlined in `ExecProcNode()` (no wrapper call) |
+
+The patches use the lightweight path only when timing, buffer and WAL usage are all off, e.g. `EXPLAIN (ANALYZE TRUE, TIMING FALSE, BUFFERS FALSE)`, which is what `batches/batch.sql` runs.
+
+All variants are built on the same commit, `COMMIT_PG20` in `bench.sh`.
 
 ## Requirements
 
@@ -26,53 +31,69 @@ The base is the tip of `origin/REL_19_STABLE` at the time `setup` is run. To pin
 ```
 $ git clone https://github.com/s-hironobu/fast_explain_analyze.git
 $ cd fast_explain_analyze
-$ bash ./bench.sh setup
+$ bash ./bench.sh setup                # -> pgsql-pg20/
 ```
 
 #### Remark:
-This shell script does not contain any `rm` commands. It only uses `cd`, `echo`, `git`, `make`, and `patch`, as well as `pg_ctl`, `createdb`, and `psql`.
+This shell script does not contain any `rm` commands. It only uses `cd`, `echo`, `git`, `make`, `mkdir`, `tr`, and `patch`, as well as `pg_ctl`, `createdb`, and `psql`.
 
 
-## Benckmark
-
-Run all benchmarks at once with the following command:
+## Benchmark
 
 ```
-$ bash ./bench.sh benchmark
+$ bash ./bench.sh benchmark              # original, alt-wrapper
+$ bash ./bench.sh benchmark all          # + only-in-node (experimental)
+$ bash ./bench.sh benchmark alt-wrapper  # only the given variant
 ```
 
-If you want to run them step-by-step, specify the option:
+### How the measurement is organized
+
+A benchmark that builds one variant, measures it, and then builds the next one cannot separate a variant's cost from the drift of the machine (thermal throttling of a fanless laptop, background jobs, ...): the differences we look for are 1-3%.
+The tool therefore works as follows:
+
+1. Every variant is built once into its own directory, `<pgsql>/variants/<variant>/`. A variant that is already built is reused (`REBUILD=1` builds it again).
+2. All variants run on the same data directory (`<pgsql>/data`). The patches do not change the on-disk format. `VACUUM ANALYZE` is run once before the first measurement, so that every variant sees the same heap.
+3. The measurement is repeated for `ROUNDS` rounds (default 3), and the **order of the variants is rotated in every round**, so that no variant is always first or last.
 
 ```
-$ bash ./bench.sh benchmark [original|alt-wrapper|only-in-node]
+$ ROUNDS=5 bash ./bench.sh benchmark
 ```
 
-The results are written to `pgsql/original.log`, `pgsql/alt-wrapper.log` and `pgsql/only-in-node.log`.
+The log of each run is written to `<pgsql>/rounds/<variant>.r<N>.log`, and the commit actually built is recorded in `BASE_COMMIT` in the same directory.
 
-After the benchmark is complete, you can use analyze.py to aggregate and display the results:
+After the benchmark is complete, you can use analyze.py to aggregate and display the results.
+Without arguments it shows the results found in `pgsql-pg20/`. Variants without logs are not shown; the experimental ones appear only if you ran them:
 
 ```
-$ python ./analyze.py
-$ python analyze.py
-	Duration[s] (var. [s^2]) 	Overhead[%]
------------------------------------------------------
+$ python3 ./analyze.py
+Error: no log files found in pgsql
+==== pgsql-pg20 (base: 9ebc9a458c) ====
+	Duration[s] (var. [s^2]) 	Overhead[%]	vs. original Query1[%]
+---------------------------------------------------------------------
 **** original:
-Query1	120.1261 	(0.0219)	N/A
-Query2	149.8707 	(0.1024)	24.76
+Query1  121.4873    (0.4225)            N/A          0.00
+Query2  151.9161    (0.6283)            25.05       25.05
 **** alt-wrapper:
-Query1	120.0420 	(0.0459)	N/A
-Query2	127.5671 	(0.0612)	6.27
-**** only-in-node:
-Query1	121.8334 	(0.0332)	N/A
-Query2	124.1280 	(0.0428)	1.88
+Query1  121.2020    (0.4064)            N/A         -0.23
+Query2  129.2084    (0.4697)            6.61         6.36
+
+Per round (Query1 / Query2 [s], Overhead[%]):
+  original      121.70/152.20 (25.06)  121.92/152.48 (25.06)  120.84/151.07 (25.02)
+  alt-wrapper   121.76/129.82 (6.62)  121.24/129.26 (6.61)  120.61/128.55 (6.59)
 ```
 
-Query1 is the plain `SELECT`; Query2 is `EXPLAIN (ANALYZE TRUE, TIMING FALSE, BUFFERS FALSE)` of the same query. Overhead is Query2 relative to Query1.
+All rounds of a variant are pooled for the table.
+The `Per round` lines show the mean of each round: if the rounds of one variant differ from each other by as much as the variants do, the machine drifted and the result should not be trusted. Run the benchmark again, with more rounds.
 
-If you want to analyze only specific results, specify the data file:
+
+Query1 is the plain `SELECT`; Query2 is `EXPLAIN (ANALYZE TRUE, TIMING FALSE, BUFFERS FALSE)` of the same query.
+`Overhead` is Query2 relative to the same variant's Query1; `vs. original Query1` is relative to the Query1 of `original` on the same base, so it also includes any slowdown of the plain `SELECT`.
+
+If you want to analyze only one directory or one file, specify it:
 
 ```
-$ python3 ./analyze.py ./pgsql/alt-wrapper.log
+$ python3 ./analyze.py ./pgsql-pg20
+$ python3 ./analyze.py ./pgsql-pg20/rounds/alt-wrapper.r1.log
 ```
 
 ## Others
@@ -95,5 +116,7 @@ $ python3 create_batches.py
 ```
 
 ## Change Log
+- 26 Nov 2026: Version 2.1: the benchmark now builds each variant once and measures them in rotated rounds, instead of one block per variant; the per-round means are shown.
 - 22 Nov 2026: Version 2.0 released. Rebased on PostgreSQL 20 (`master`); benchmarks the `alt-wrapper` and `only-in-node` patches.
 - 10 Dec 2025: Version 1.0 released.
+
