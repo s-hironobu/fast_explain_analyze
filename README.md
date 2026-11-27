@@ -3,22 +3,22 @@
 This repository stores the tools and results for benchmarking Fast EXPLAIN ANALYZE, as described in my blog post:
 + [Fast EXPLAIN ANALYZE 2](http://www.interdb.jp/blog/pgsql/fast_explain_analyze2/)
 
-This version benchmarks the `alt-wrapper` patch against unpatched PostgreSQL 20devel (`9ebc9a458c3`).
+This version benchmarks the `lite-rowcount` patch against unpatched PostgreSQL 20devel (`9ebc9a458c3`).
 
-| Option         | Patch                                | Description |
-|----------------|--------------------------------------|-------------|
-| `original`     | (none)                               | Unpatched PostgreSQL 20devel |
-| `alt-wrapper`  | `patches/pg20-alt-wrapper.patch`      | Row counting in a lightweight `ExecProcNodeInstrRows()` wrapper |
+| Option         | Patch                                  | Description |
+|----------------|----------------------------------------|-------------|
+| `original`     | (none)                                 | Unpatched PostgreSQL 20devel |
+| `lite-rowcount`| `patches/pg20-lite-rowcount.patch`      | Row counting in a lightweight `ExecProcNodeInstrRows()` wrapper |
 
 Experimental variant (run with `benchmark all` or by name):
 
-| Option         | Patch                                | Description |
-|----------------|--------------------------------------|-------------|
-| `only-in-node` | `patches/pg20-only-in-node.patch`     | Row counting inlined in `ExecProcNode()` (no wrapper call) |
+| Option             | Patch                                    | Description |
+|--------------------|------------------------------------------|-------------|
+| `feather-rowcount` | `patches/pg20-feather-rowcount.patch`     | Row counting inlined in `ExecProcNode()` (no wrapper call) |
 
 The patches use the lightweight path only when timing, buffer and WAL usage are all off, e.g. `EXPLAIN (ANALYZE TRUE, TIMING FALSE, BUFFERS FALSE)`, which is what `batches/batch.sql` runs.
 
-All variants are built on the same commit, `COMMIT_PG20` in `bench.sh`.
+All variants are built on the same commit, `COMMIT` in `bench.sh`.
 
 ## Requirements
 
@@ -41,9 +41,9 @@ This shell script does not contain any `rm` commands. It only uses `cd`, `echo`,
 ## Benchmark
 
 ```
-$ bash ./bench.sh benchmark              # original, alt-wrapper
-$ bash ./bench.sh benchmark all          # + only-in-node (experimental)
-$ bash ./bench.sh benchmark alt-wrapper  # only the given variant
+$ bash ./bench.sh benchmark                  # original, lite-rowcount
+$ bash ./bench.sh benchmark all              # + feather-rowcount (experimental)
+$ bash ./bench.sh benchmark lite-rowcount    # only the given variant
 ```
 
 ### How the measurement is organized
@@ -66,20 +66,19 @@ Without arguments it shows the results found in `pgsql-pg20/`. Variants without 
 
 ```
 $ python3 ./analyze.py
-Error: no log files found in pgsql
 ==== pgsql-pg20 (base: 9ebc9a458c) ====
 	Duration[s] (var. [s^2]) 	Overhead[%]	vs. original Query1[%]
 ---------------------------------------------------------------------
 **** original:
-Query1  121.4873    (0.4225)            N/A          0.00
-Query2  151.9161    (0.6283)            25.05       25.05
-**** alt-wrapper:
-Query1  121.2020    (0.4064)            N/A         -0.23
-Query2  129.2084    (0.4697)            6.61         6.36
+Query1	121.4873 	(0.4225)	N/A	0.00
+Query2	151.9161 	(0.6283)	25.05	25.05
+**** lite-rowcount:
+Query1	121.2020 	(0.4064)	N/A	-0.23
+Query2	129.2084 	(0.4697)	6.61	6.36
 
 Per round (Query1 / Query2 [s], Overhead[%]):
-  original      121.70/152.20 (25.06)  121.92/152.48 (25.06)  120.84/151.07 (25.02)
-  alt-wrapper   121.76/129.82 (6.62)  121.24/129.26 (6.61)  120.61/128.55 (6.59)
+  original        121.70/152.20 (25.06)  121.92/152.48 (25.06)  120.84/151.07 (25.02)
+  lite-rowcount   121.76/129.82 (6.62)  121.24/129.26 (6.61)  120.61/128.55 (6.59)
 ```
 
 All rounds of a variant are pooled for the table.
@@ -93,7 +92,7 @@ If you want to analyze only one directory or one file, specify it:
 
 ```
 $ python3 ./analyze.py ./pgsql-pg20
-$ python3 ./analyze.py ./pgsql-pg20/rounds/alt-wrapper.r1.log
+$ python3 ./analyze.py ./pgsql-pg20/rounds/lite-rowcount.r1.log
 ```
 
 ## Others
@@ -116,7 +115,7 @@ $ python3 create_batches.py
 ```
 
 ## Change Log
-- 26 Nov 2026: Version 2.1: the benchmark now builds each variant once and measures them in rotated rounds, instead of one block per variant; the per-round means are shown.
+- 27 Nov 2026: renamed the patches (`alt-wrapper` -> `lite-rowcount`, `only-in-node` -> `feather-rowcount`).
+- 24 Nov 2026: Version 2.1: the benchmark now builds each variant once and measures them in rotated rounds, instead of one block per variant; the per-round means are shown.
 - 22 Nov 2026: Version 2.0 released. Rebased on PostgreSQL 20 (`master`); benchmarks the `alt-wrapper` and `only-in-node` patches.
 - 10 Dec 2025: Version 1.0 released.
-

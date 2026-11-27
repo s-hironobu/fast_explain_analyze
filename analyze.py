@@ -3,8 +3,7 @@
 
  Usage: python analyze.py [file|dir]
 
-   No argument: aggregate ./pgsql-pg20 (and ./pgsql, ./pgsql-pg19 of the
-                older bases), whichever have logs.
+   No argument: analyze ./pgsql-pg20.
    dir:         aggregate the logs in that directory.
    file:        aggregate a single log file.
 
@@ -124,9 +123,9 @@ def displaySingleBench(query1, query2, query3=None, orig_avg1=None):
 
 
 # Variants in the order they are displayed.  Variants without logs are
-# skipped, so original + alt-wrapper alone work.
-VARIANTS = ["original", "alt-wrapper", "only-in-node", "phase-2", "phase-3"]
-EXPERIMENTAL = ["only-in-node"]
+# skipped, so original + lite-rowcount alone work.
+VARIANTS = ["original", "lite-rowcount", "feather-rowcount"]
+EXPERIMENTAL = ["feather-rowcount"]
 
 
 def label(v):
@@ -245,7 +244,7 @@ if __name__ == "__main__":
             sys.exit(1)
 
     if BASE_DIR is None:
-        dirs = [d for d in ["pgsql-pg20", "pgsql", "pgsql-pg19"] if os.path.isdir(d)]
+        dirs = [d for d in ["pgsql-pg20"] if os.path.isdir(d)]
         if not dirs:
             print("Error: pgsql-pg20 not found.  Run: bash ./bench.sh benchmark")
             sys.exit(1)

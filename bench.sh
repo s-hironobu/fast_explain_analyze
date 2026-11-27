@@ -1,28 +1,23 @@
 #!/bin/bash
 #
-#
 #    Usage: $0 {setup|benchmark [all|variant]}
 #
 #      setup                 build PostgreSQL 20devel and create the database
-#      benchmark             original, alt-wrapper
-#      benchmark all         original, alt-wrapper, only-in-node (experimental)
+#      benchmark             original, lite-rowcount
+#      benchmark all         original, lite-rowcount, feather-rowcount
 #      benchmark <variant>   only the given variant
 #
 #      variants:
-#        original               unpatched
-#        alt-wrapper            row counting in a lightweight wrapper
-#        only-in-node           (experimental) counting in ExecProcNode()
+#        original          unpatched
+#        lite-rowcount     row counting in a lightweight wrapper
+#        feather-rowcount  (experimental) row counting inlined in ExecProcNode()
 #
-#      Base: PostgreSQL 20devel, commit 9ebc9a458c3 (COMMIT_PG20).
+#      Base: PostgreSQL 20devel, commit 9ebc9a458c3 (COMMIT).
 #      Install directory: ./pgsql-pg20
 #
-#    Older bases (not documented in README.md; kept for reference):
-#      -b|--base master   tip of origin/master (or COMMIT_MASTER), ./pgsql
-#                           variants: original alt-wrapper only-in-node
-#      -b|--base pg19     47a9f61 (the base of Phase 3 in version 1.0), ./pgsql-pg19
-#                           variants: original phase-2 phase-3 alt-wrapper
-#                                     only-in-node
-#      Each base has its own install directory and database cluster.
+#    Note: Versions 2.5 and older of this tool also supported the bases
+#    "master" and "pg19" (47a9f61) with the Phase 2/3 patches of the first
+#    post.  They were removed in version 2.6; see the git history.
 #
 # Copyright (c) 2025-2026, Hironobu Suzuki @ interdb.jp
 
@@ -33,75 +28,26 @@ set -eu -o pipefail
 #--------------------
 BASE=`pwd`
 SOURCE_DIR=${BASE}/postgres
+PGSQL_DIR=${BASE}/pgsql-pg20
 DB_NAME="testdb"
 
-# Base branch: PostgreSQL master (development branch).
+# Base: PostgreSQL 20devel (master).
+# The commit the patches in patches/ were made and tested on.
+# All variants are built on it.
 BRANCH="master"
+COMMIT="9ebc9a458c3"
 
-# --base pg20 (default): PostgreSQL 20devel.
-#   The commit the patches in patches/pg20-*.patch were made and tested on.
-#   All variants are built on it.
-COMMIT_PG20="9ebc9a458c3"
+DEFAULT_VARIANTS="original lite-rowcount"
+ALL_VARIANTS="original lite-rowcount feather-rowcount"
 
-# --base master (legacy):
-#   If you want to pin the base to a specific commit on master,
-#   set COMMIT_MASTER to its hash.  If empty, the tip of origin/master
-#   fetched by 'setup' is used.
-COMMIT_MASTER=""
-
-# --base pg19 (legacy):
-#   The commit on which Phase 3 was benchmarked in version 1.0.
-COMMIT_PG19="47a9f61fcafcf26bd3d68740ca05ba69ac729d93"
-
-# Set by select_base()
-BASE_SET=""
-COMMIT=""
-PGSQL_DIR=""
-DEFAULT_VARIANTS=""	# 'benchmark'
-ALL_VARIANTS=""		# 'benchmark all'
-
-select_base() {
-    BASE_SET=$1
-    case "$BASE_SET" in
-	pg20)
-	    COMMIT=$COMMIT_PG20
-	    PGSQL_DIR=${BASE}/pgsql-pg20
-	    DEFAULT_VARIANTS="original alt-wrapper"
-	    ALL_VARIANTS="original alt-wrapper only-in-node"
-	    ;;
-	master)
-	    COMMIT=$COMMIT_MASTER
-	    PGSQL_DIR=${BASE}/pgsql
-	    DEFAULT_VARIANTS="original alt-wrapper"
-	    ALL_VARIANTS="original alt-wrapper only-in-node"
-	    ;;
-	pg19)
-	    COMMIT=$COMMIT_PG19
-	    PGSQL_DIR=${BASE}/pgsql-pg19
-	    DEFAULT_VARIANTS="original alt-wrapper"
-	    ALL_VARIANTS="original phase-2 phase-3 alt-wrapper only-in-node"
-	    ;;
-	*)
-	    echo "Error: unknown base '$BASE_SET'."
-	    exit 1
-	    ;;
-    esac
-}
-
-# Return the patch file for a variant of the selected base ("" = none).
+# Return the patch file for a variant ("" = none).
 variant_patch() {
-    case "$BASE_SET:$1" in
-	*:original)                    echo "" ;;
-	pg20:alt-wrapper)              echo "pg20-alt-wrapper.patch" ;;
-	pg20:only-in-node)             echo "pg20-only-in-node.patch" ;;
-	master:alt-wrapper)            echo "v1-0001-alt-rowcount-only-instr-wrapper.patch" ;;
-	master:only-in-node)           echo "v1-0001-rowcount-only-instr-in-ExecProcNode.patch" ;;
-	pg19:phase-2)                  echo "pg19-phase-2.patch" ;;
-	pg19:phase-3)                  echo "pg19-phase-3.patch" ;;
-	pg19:alt-wrapper)              echo "pg19-alt-wrapper.patch" ;;
-	pg19:only-in-node)             echo "pg19-only-in-node.patch" ;;
+    case "$1" in
+	original)          echo "" ;;
+	lite-rowcount)     echo "pg20-lite-rowcount.patch" ;;
+	feather-rowcount)  echo "pg20-feather-rowcount.patch" ;;
 	*)
-	    echo "Error: '$1' is not a valid variant for base '$BASE_SET'." >&2
+	    echo "Error: '$1' is not a valid variant." >&2
 	    echo "       Valid variants: $ALL_VARIANTS" >&2
 	    exit 1
 	    ;;
@@ -110,10 +56,10 @@ variant_patch() {
 
 usage() {
     echo "Usage: $0 setup"
-    echo "       $0 benchmark                # original, alt-wrapper"
-    echo "       $0 benchmark all            # + only-in-node (experimental)"
+    echo "       $0 benchmark                # original, lite-rowcount"
+    echo "       $0 benchmark all            # + feather-rowcount (experimental)"
     echo "       $0 benchmark <variant>      # only the given variant"
-    echo "  variants: original alt-wrapper only-in-node"
+    echo "  variants: original lite-rowcount feather-rowcount"
 }
 
 #--------------------
@@ -126,7 +72,7 @@ git_reset() {
 	echo "Error: Failed to execute 'git reset --hard HEAD'."
 	exit 1
     fi
-    local target=${COMMIT:-origin/$BRANCH}
+    local target=$COMMIT
     git checkout -B $BRANCH $target
     if [ $? -ne 0 ]; then
 	echo "Error: Failed to execute 'git checkout -B $BRANCH $target'."
@@ -137,7 +83,7 @@ git_reset() {
 	echo "Error: Failed to execute 'git reset --hard $target'."
 	exit 1
     fi
-    echo "Base ($BASE_SET): `git rev-parse HEAD`"
+    echo "Base: `git rev-parse HEAD`"
     git rev-parse HEAD > $PGSQL_DIR/BASE_COMMIT 2>/dev/null || true
     cd $BASE
 }
@@ -182,7 +128,6 @@ setup() {
     fi
 
     # 2. git fetch master && git reset
-    #    (clean first: the tree may still be configured for the other base)
     make_clean
     git_fetch
     mkdir -p $PGSQL_DIR
@@ -265,7 +210,7 @@ setup() {
     ./bin/pg_ctl -D data stop
 
     echo "==========================="
-    echo "Setup completed! (base: $BASE_SET, $PGSQL_DIR)"
+    echo "Setup completed! ($PGSQL_DIR)"
     echo "==========================="
 }
 
@@ -289,7 +234,7 @@ build_variant() {
 	return
     fi
 
-    echo "Building '$variant' (base: $BASE_SET) ..."
+    echo "Building '$variant' ..."
     make_clean
     git_reset
     cd $SOURCE_DIR
@@ -320,7 +265,7 @@ run_once() {
 
     cd $PGSQL_DIR
     $bin/pg_ctl -D data -l data/server.log -w start
-    echo "== round $round: $variant ($BASE_SET) =="
+    echo "== round $round: $variant =="
     $bin/psql -d $DB_NAME -e -f $BASE/batches/batch.sql 2>&1 | tee $log
     $bin/pg_ctl -D data -w stop
 }
@@ -334,7 +279,7 @@ benchmark() {
 	exit 1
     fi
     if [ ! -d $PGSQL_DIR/data ]; then
-	echo "Error: $PGSQL_DIR/data not found.  Run: $0 --base $BASE_SET setup"
+	echo "Error: $PGSQL_DIR/data not found.  Run: $0 setup"
 	exit 1
     fi
 
@@ -386,25 +331,6 @@ benchmark() {
 # main
 #--------------------
 
-BASE_OPT="pg20"
-if [ $# -ge 1 ]; then
-    case "$1" in
-	-b|--base)
-	    if [ $# -lt 2 ]; then
-		usage
-		exit 1
-	    fi
-	    BASE_OPT=$2
-	    shift 2
-	    ;;
-	--base=*)
-	    BASE_OPT=${1#--base=}
-	    shift
-	    ;;
-    esac
-fi
-select_base "$BASE_OPT"
-
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then
     usage
     exit 1
@@ -429,7 +355,7 @@ case "$1" in
         ;;
     benchmark)
 	if [ ! -x $PGSQL_DIR/bin/psql ]; then
-	    echo "Error: $PGSQL_DIR not set up.  Run: $0 --base $BASE_SET setup"
+	    echo "Error: $PGSQL_DIR not set up.  Run: $0 setup"
 	    exit 1
 	fi
 	echo -n "Confirm that no other PostgreSQL server is active. Do you want to continue? [y/N]: "
